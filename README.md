@@ -4,6 +4,7 @@
 
 ## 项目目录
 
+- [`ADS/`](ADS/)：ADS 课程作业的 C 语言实现；当前包含 AVL 树作业 [`ADS/hw1.c`](ADS/hw1.c)，读入 n 个整数依次插入 AVL 树后输出根结点的值。
 - [`ctf/`](ctf/)：Lab 0 至 Lab 3 的 CTF 报告、配图、解题源码和附件。
 - [`ctf/tools.md`](ctf/tools.md)：本机 CTF 常用工具说明。
 - [`sys1_pr/`](sys1_pr/)：使用 SystemVerilog 编写的 RV64I 单周期 CPU 项目；详细说明见 [`sys1_pr/readme.md`](sys1_pr/readme.md)。
