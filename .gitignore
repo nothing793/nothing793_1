@@ -28,3 +28,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# 本地 Codex 规则文件、编译产物与 CTF 原始附件包（仅保留在本地，不入库）
+AGENTS.md
+*.zip
