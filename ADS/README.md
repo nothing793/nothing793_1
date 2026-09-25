@@ -6,6 +6,7 @@
 
 - `hw1.c`：AVL 树插入作业。读入 `n` 个整数依次插入，插入过程中通过 LL / LR / RR / RL 旋转保持平衡，最后输出根结点的值。
 - `hw2.c`：3 阶 B+ 树作业。实现初始化、插入（含分裂）、查找，并按层输出整棵树。
+- `hw3.c`：Document Distance 作业。用词频向量的夹角度量两篇文档的距离；已把 [wooorm/stmr.c](https://github.com/wooorm/stmr.c) 的 Porter 词干算法内联进来，是**自包含单文件**（PTA 只提交这一个 `.c`）。仓库里另存的 `stmr.c` / `stmr.h` 仅是算法来源参考，不参与编译（MIT 许可见 `LICENSE-stmr.txt`）。
 
 ## hw1.c：AVL 树
 
@@ -171,3 +172,126 @@ printf '3\n1 2 3\n'                   | ./hw2   # 样例 3
 ### 说明
 
 本题的重复关键字按题面处理：已在树中的关键字不再插入，并输出 `Key X is duplicated`（与 hw1 的 AVL 树题目不同，那道题保证关键字互不相同）。
+
+## hw3.c：Document Distance
+
+### 题目描述
+
+> Plagiarism is a form of academic dishonesty. To fight with such misconducts, plagiarism checkers are developed to compare any submitted article with all the articles stored in a database. The key is that given two documents, how to judge their similarity, or in other words, document distance?
+>
+> … Your stemming algorithm must be able to handle "es", "ed", "ing", "ies" and must be case-insensitive. Stop words are not supposed to be ignored and must be treated as normal words.
+
+术语与度量：
+
+- **Word**：连续的数字/字母序列，题面保证单词不超过 20 个字符。
+- **Word frequency**：`F_D(w)` 表示词 `w` 在文档 `D` 中出现的次数。
+- **Document distance metric**：`(F(D1),F(D2)) = Σ F1(w)·F2(w)`（词频向量内积）。
+- **Angle metric**：`θ(D1,D2) = arccos( (F(D1),F(D2)) / (|F(D1)|·|F(D2)|) ) ∈ [0,π/2]`，其中 `|F(D)| = sqrt((F(D),F(D)))`（2-范数）。
+
+**Input Specification**：第一行是正整数 `N（N ≤ 100）`，表示待处理的文本文件个数；随后 `N` 个文件块，每块第一行是文章题名（不超过 6 个字符、不含空格），接着是正文若干行，最后一行是单独的字符 `#`；文件块结束后有一行正整数 `M（M ≤ 100,000）`，随后 `M` 行询问，每行是两个题名，用空格分隔。最大的测试用例约 1 MB。
+
+**Output Specification**：每个询问输出一行 `Case #: *`，其中 `#` 是询问编号（从 1 开始），`*` 是文档距离，保留 3 位小数。
+
+**Sample Input**
+
+```
+3
+A00
+A B C
+#
+A01
+B C D
+#
+A02
+A C
+D A
+#
+2
+A00 A01
+A00 A02
+```
+
+**Sample Output**
+
+```
+Case 1: 0.841
+Case 2: 0.785
+```
+
+### 实现要点（`hw3.c`）
+
+| 函数 / 结构 | 作用 |
+| --- | --- |
+| `WordEntry` | 一个词：`word` / `freq` / `bucketnext`（桶内链）/ `listnext`（文档内全词链） |
+| `Document` | 一篇文档：`title`、`size`（不同单词数）、2048 个哈希桶、全词链表头 |
+| `hashstring` | djb2 字符串哈希 |
+| `stemword` | 统一转小写后调用内联的 `stem()` 做 Porter 词干提取 |
+| `lookup` / `addword` | 哈希表查词 / 词频自增或插入，均摊 O(1) |
+| `scanline` | 把一行文本按「连续 alnum 段」切成单词 |
+| `isterminator` | 判断是否是独占一行的 `#`（容忍前后空格与 `\r`） |
+| `dotproduct` | 遍历词少的那篇文档，在另一篇里查表求内积 |
+| `finddocument` | 题名 → 文档下标 的哈希查找，O(1) |
+
+关键设计：
+
+1. **词切分按字符扫描而不是按空白切分**：题面把词定义为「连续的数字/字母序列」，所以标点必须当分隔符（`"don't"` → `don` / `t`，`"well-known"` → `well` / `known`），用 `scanf("%s")` 会把 `test-case` 当成一个词。
+2. **词干 + 大小写不敏感**：先 `tolower` 再 `stem()`；`stmr.c` 只处理小写字母序列，且 `stem(p,0,len-1)` 返回词干末字符下标、不写结束符，因此调用后要自己补 `'\0'`。停用词照常统计。
+3. **所有文件预先两两算好**：`N ≤ 100`，文件对最多 `C(100,2) = 4950` 个，先把点积矩阵和 2-范数算完，之后每次询问只做常数次浮点运算。若逐个询问现算，最坏 `10^5` 次询问 × 上千个词会超时。
+4. **浮点安全**：余弦值夹到 `[-1,1]` 再 `acos`，避免浮点误差导致 `nan`；两篇都为空约定 `0.000`，一篇为空的夹角为 `π/2`。
+
+### 构建与运行
+
+```bash
+gcc -std=c99 -Wall -Wextra -O2 -o hw3 hw3.c -lm
+
+printf '3\nA00\nA B C\n#\nA01\nB C D\n#\nA02\nA C\nD A\n#\n2\nA00 A01\nA00 A02\n' | ./hw3
+```
+
+只编译 `hw3.c` 即可（不用带 `stmr.c`），在 `-std=c99`、`-std=gnu99`、`-std=c11`、`-std=gnu11`、`-std=gnu17` 下用 `gcc -Wall -Wextra` 编译均无警告，`-Wshadow` 亦无警告。
+
+`hw3.c` 自带完整注释：自己的部分用中文注释，内联的 Porter 词干部分保留上游英文注释与算法出处。
+
+### 验证结果
+
+- 题面样例：`0.841`、`0.785`，与预期一致（手算：`2/3 → 0.8411`，`3/(√3·√6) → 0.7854`）。
+- 与一份独立的 Python 参考实现（切词、词频、夹角独立实现，仅共用同一个 `stem` 程序）对拍：60 组随机小用例 + 1 组中规模用例（20 篇 × 3000 词、500 询问）输出完全一致。
+- `-fsanitize=address,undefined` 下 9 组用例（样例、空文档、同一篇自比、CRLF 输入、末尾无换行、超长单词、1.9 MB 用例等）无越界、无未定义行为、无内存泄漏。
+- 内联前后等价性：把 `stmr.c` 内联进 `hw3.c` 后，10 个用例（含 22 MB / 2.2 M 词、1.9 MB 加 10 万询问的用例）的输出与原「`hw3.c` + `stmr.c`」两文件版本逐字节一致。
+- 规模：22 MB 输入（100 篇 × 2 万词、10 万询问）耗时 1.8 s；按题面上限构造的 1.9 MB 用例（100 篇 × 1000 词、10 万询问）耗时 0.03 s。
+
+### 词干算法（`stmr.c`）
+
+本题按作业要求采用 [wooorm/stmr.c](https://github.com/wooorm/stmr.c) 的 Porter 词干算法，`hw3.c` 只保留这一种实现（已内联，提交单文件即可）：
+
+- 题面 Note 要求能处理 `es` / `ed` / `ing` / `ies`，Porter 全部覆盖：`runs` → `run`、`cats` → `cat`、`studies` → `studi`、`walked` → `walk`、`nationalization` → `nation`。
+- 它还会继续处理 `-ation` / `-ly` / `-er` / `-al` / `-ment` / `-ous` 等更多后缀（例如 `quickly` → `quick`、`computer` → `comput`），这是该算法的固有行为。
+- 大小写由 `hw3.c` 的 `stemword()` 先 `tolower` 保证（`stem()` 只处理小写字母序列），调用后再补 `'\0'`。
+
+同一份数据的实测差异（用 GPL-3 正文的前后两半作两篇文档，仅说明词干策略的影响，不是本题结果）：
+
+| 处理方式 | 夹角 | 输出的 3 位小数 |
+| --- | --- | --- |
+| 不做词干化 | 0.388596 | 0.389 |
+| 只剥离 `es` / `ed` / `ing` / `ies` | 0.388626 | 0.389 |
+| **Porter（本题采用）** | 0.399823 | **0.400** |
+
+可以看到词干策略会明显改变第 3 位小数，所以不能用「简单后缀剥离」之类的实现替代 `stmr.c`。另外样例数据里没有需要词干化的词，仅靠样例无法区分不同的词干方案。
+
+### 附：内联的 `stmr.c` / `stmr.h`
+
+- 来源：<https://github.com/wooorm/stmr.c>，Martin Porter 1980 年词干算法的 ANSI C 实现（MIT 许可，原 `license` 文件保留为 `LICENSE-stmr.txt`）。
+- 接口：`int stem(char *p, int index, int position)`，在 `p[index..position]` 上原地做词干提取，返回词干末字符的下标（不写结束符），长度 ≤ 2 的串原样返回。
+- 调用约定：只对小写字母序列生效（所以先 `tolower`），调用后需自行补 `'\0'`；内部使用静态变量，不可重入、非线程安全（本题单线程使用，无影响）。
+- 内联时的改动（仅此几处，算法逻辑未动）：
+  - 去掉 `#include "stmr.h"`，把 `TRUE` / `FALSE` 宏与 `stem()` 的原型写进 `hw3.c`；
+  - `stem()` 由外部链接改为 `static`（单文件不需要对外导出，也不会和 `stmr.c` 重复定义）；
+  - 原有文件级静态变量 `b` / `k` / `k0` / `j` 改名为 `stem_buf` / `stem_k` / `stem_k0` / `stem_j`，避免与 `hw3.c` 里的局部变量同名遮蔽；
+  - 保留上游注释（算法出处、`--DEPARTURE--` 说明等），并在段首补了一段说明内联改动与变量改名的中文注释。
+- 仓库里的 `stmr.c` / `stmr.h` 保持上游原样，仅作为来源对照，编译时不需要。
+
+### 已知限制
+
+- 单词超过 20 个字符时只取前 20 个字符（题面保证不会出现）。
+- 询问中若出现不存在的题名，按距离 `0.000` 输出（题面保证询问的文件都存在，这里只作防御）。
+- 只按 ASCII 的 `isalnum` 切词，非 ASCII 字节会被当作分隔符。
+- 文档数按 `N ≤ 100` 设计（哈希桶数 2048、点积矩阵 `N × N`），`N` 更大时需调大 `BUCKETS`。
