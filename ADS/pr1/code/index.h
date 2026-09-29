@@ -1,12 +1,13 @@
 /* pr1（8-1 Roll Your Own Mini Search Engine）：倒排索引的公共接口。
  *
  * 文件职责（对应题面的三个程序）：
- *   tokenize.c + tokenize.h  —— 【未实现】原始文本 -> (term, doc_id, pos) 三元组流
- *   wordcount.c              —— 【未实现】Part 1：词/文档频次统计 + θ 阈值 -> stoplist
- *   index_gen.c              —— Part 2：读三元组建内存索引（index_build）+ main（落盘）
- *                               【未实现】按 stoplist 剔词
- *   query.c                  —— Part 3：加载索引（index_load）+ 词查询（query_word）+ main
- *                               【未实现】短语查询、查询阈值 τ
+ *   tokenize.c + tokenize.h  —— 原始文本 -> (term, doc_id, pos) 三元组流
+ *                               （命令行入口在 tokenize_main.c；本模块不做词干化）
+ *   index_gen.c              —— Part 1（词频 / 文档频次统计 + θ 阈值 -> stoplist.txt）
+ *                               + Part 2（读三元组建内存索引 index_build + 落盘 index.bin，
+ *                               建索引时跳过 stoplist 里的词）
+ *   query.c                  —— Part 3（加载索引 index_load + 单词 / AND / 短语查询）
+ *                               + Part 4（查询阈值 τ：df/N > τ 的词判为 too common）
  *   index_io.c               —— 共享索引模块：内存索引的构造/销毁/插入/查找 + index.bin 读写
  *   stem.c / stem.h          —— 词干模块，已就绪（Porter 算法）
  *

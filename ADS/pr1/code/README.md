@@ -28,21 +28,27 @@
 
 ## 1. 本目录是什么
 
-代码按题面的「三个程序」拆分（2026-09-26）：word counting / index generation / query processing
-在评分细则里是**三个程序**，且第 3 问要求 *"query program on top of your **inverted file** index"*
-—— 索引要落盘、查询程序独立读盘。所以本目录的结构是「建索引程序 + 查询程序」，中间靠 `index.bin` 连接。
+代码按题面的三个程序组织：第 3 问要求 *"query program on top of your **inverted file** index"*
+—— 索引必须落盘、查询程序独立读盘，所以结构是「建索引程序 + 查询程序」，中间靠 `index.bin` 连接。
+第 1 问的统计与第 2 问的建索引必须共用同一套切词 / 词干化口径，因此合并在 `index_gen` 里
+（**两遍扫描**：pass 1 统计出 stoplist，pass 2 跳过停用词建索引）。原计划的 `wordcount.c` 是空壳，
+已删除；拆成两个独立程序只会带来"stoplist 陈旧"和"口径漂移"两类问题，理由见第 13 节。
 
-**现状：端到端已经打通。** `index_gen` 读三元组建内存倒排索引 → 写 `index.bin`；
-`query` 独立加载 `index.bin` → 查词 → 写 `output.txt`。
-实测（本机 gcc 11 / x86-64，880,000 条三元组 / 40 篇文档 / 26,376 个词干）：建索引 + 落盘约 1.3 s、
-峰值内存约 39 MB，`index.bin` 约 3.6 MB，`query` 加载 + 查询约 0.13 s。
+**现状：题面四问全部实现，端到端测试 19 项全过。**
+`tokenize` 把原始文本切成三元组 `file.txt`；`index_gen` 读 `file.txt`，先统计 θ 停用词
+（`stoplist.txt`），再跳过停用词建索引并落盘 `index.bin`；`query` 独立加载 `index.bin`，
+支持单词 / 多词 AND / 短语查询，以及查询阈值 τ。
 
-**剩下的阻塞项**（按依赖顺序）：
+本机实测（gcc 11 / x86-64）：
 
-1. `wordcount` 的 stoplist —— 题面明写 *The stop words identified in part (1) must not be included*，
-   现在索引里还带着停用词；
-2. `tokenize` 的切词口径 —— 现在靠外部生成的「`<word> <doc_id> <pos>`」文件喂数据；
-3. `query` 的短语查询与 τ 阈值。
+| 语料 | 三元组 | N | V | index.bin | `index_gen` | `query` |
+| --- | --- | --- | --- | --- | --- | --- |
+| 合成语料（40 篇 × 4000 词，`tests/gen_corpus.py`，θ = 0.5） | 161,892 | 40 | 7,124 | 263.8 KB | 0.79 s | 0.02 s |
+| 早期手写样例（未剔除停用词） | 880,000 | 40 | 26,376 | 3.6 MB | 1.3 s | 0.13 s |
+
+**还差的一步**：真实语料（莎士比亚全集，`shakespeare.mit.edu`）按你的指示尚未下载。
+拿到之后只要 `./tokenize <每部剧一个文件> > file.txt`，其余流程与阈值实验原样复用
+（`tests/sweep.py` 不用改）。
 
 ---
 
@@ -52,11 +58,13 @@
 | --- | --- | --- |
 | `index.h` | 公共类型（`DocTable` / `Position` / `Posting` / `inverted_index`）、接口声明、`index.bin` 格式规范 | 就绪 |
 | `index_io.c` | 共享索引模块：内存索引的构造 / 插入 / 查找 + `index_save()` / `index_load()` | 就绪 |
-| `index_gen.c` | Part 2：`index_build()` 读三元组建内存倒排索引 + `main` 落盘 | 已实现；**按 stoplist 剔词未实现** |
-| `query.c` | Part 3：`index_load()` + `query_word()` 词干化查表 + `main` | 已实现；**短语查询、τ 阈值未实现** |
+| `index_gen.c` | Part 1：`wc_scan()` 统计 cf / df、`wc_stoplist()` 按 `df/N > θ` 挑停用词、词频报告；Part 2：`index_build()` 跳过停用词建索引 + `main` 落盘 | 完成 |
+| `query.c` | Part 3：`index_load()` + 单词 / AND / 短语查询；Part 4：查询阈值 τ + `main` | 完成 |
 | `stem.c` / `stem.h` | 词干模块（Porter 算法，`stemword()` = 转小写 + 词干） | 就绪 |
-| `tokenize.c` / `tokenize.h` | 原始文本 -> `(term, doc_id, pos)` 三元组流 | `tokenize.c` 有骨架（写 `tokens.txt`）但**未接入主流程**；`tokenize.h` 仍是空文件 |
-| `wordcount.c` | Part 1：词频 / 文档频次统计 + θ 阈值 -> stoplist | **未实现**（只有一行 `#include`） |
+| `tokenize.c` / `tokenize.h` | 原始文本 -> `(term, doc_id, pos)` 三元组流：`tokenize_next()` / `tokenize_text()` / `tokenize_file()` | 完成 |
+| `tokenize_main.c` | 切词命令行入口：`./tokenize 文件... > file.txt`（每个文件 = 一篇文档） | 完成 |
+| `tests/` | 端到端测试、合成语料生成、独立对拍、θ/τ 实验；详见 [`tests/README.md`](tests/README.md) | 完成 |
+| `wordcount.c` | 原计划的 Part 1 独立程序 | **已删除**：内容只是空壳，功能并入 `index_gen.c`（第 13 节） |
 
 `index_io.c` 是 `index_gen` 与 `query` 共用的库（两个程序各有一个 `main`）：
 「建索引」和「读索引」走**同一套插入逻辑与同一个文件格式**，所以不可能出现
@@ -67,20 +75,40 @@
 ## 3. 构建与运行
 
 ```bash
-# 建索引：读 file.txt -> 建内存倒排索引 -> 写 index.bin
-gcc -std=c99 -Wall -Wextra -o index_gen index_gen.c index_io.c stem.c -lm
-./index_gen
+cd code
 
-# 查询：读 index.bin -> 查词 -> 写 output.txt
+# 切词：原始文本 -> file.txt（每个文件 = 一篇文档，doc_id 按命令行顺序 0,1,2...）
+gcc -std=c99 -Wall -Wextra -o tokenize tokenize_main.c tokenize.c
+./tokenize corpus/*.txt > file.txt
+
+# Part 1 + Part 2：统计 -> stoplist.txt -> 建索引 -> index.bin
+gcc -std=c99 -Wall -Wextra -o index_gen index_gen.c index_io.c stem.c -lm
+./index_gen                  # θ 用编译期默认值 STOPWORD_THETA = 0.5
+./index_gen --theta=0.4      # 运行时覆盖 θ
+./index_gen --count-only     # 只跑 Part 1：词频报告 + stoplist.txt，不建索引
+
+# Part 3 + Part 4：查询
 gcc -std=c99 -Wall -Wextra -o query query.c index_io.c stem.c -lm
-./query run zebra          # 直接查命令行给出的词
-./query                    # 不给参数则读 test.txt（按空白切词）
+./query wevafi               # 单词查询
+./query wevafi zebra         # 多个参数 = AND（交集）
+./query "a b c"              # 单个参数含空白 = 短语（位置连续）
+./query --tau=0.2 wevafi     # 开查询阈值
+./query                      # 读 test.txt，每行一个查询
 ```
 
-两个程序只用**当前工作目录**下的相对路径（`file.txt` / `index.bin` / `test.txt` / `output.txt`），
-不认命令行里的路径参数；数据文件与可执行文件放在同一个目录即可。若还没有 `index.bin`，
-`./query` 会提示先跑 `./index_gen`；若 `index.bin` 损坏或版本不符，`./query` 会拒绝加载并报错
-（不会带着半个索引继续查）。
+三个程序都只用**当前工作目录**下的相对路径（`file.txt` / `index.bin` / `stoplist.txt` /
+`test.txt` / `output.txt`），不认路径参数；数据文件与可执行文件放在同一个目录即可。
+θ 有三种给法：改 `index_gen.c` 里的 `STOPWORD_THETA` 宏、编译时 `-DSTOPWORD_THETA=0.4`、
+运行时 `--theta=0.4`（宏只是默认值）。若还没有 `index.bin`，`./query` 会提示先跑 `./index_gen`；
+若 `index.bin` 损坏或版本不符，`./query` 会拒绝加载并报错（不会带着半个索引继续查）。
+
+测试与实验都在临时目录里编译执行，不往 `code/` 里丢产物：
+
+```bash
+cd tests
+sh run_tests.sh                 # 19 项端到端测试（默认工作目录 /tmp/pr1-test）
+python3 sweep.py /tmp/pr1-test  # θ / τ 敏感性实验，输出 Markdown 表
+```
 
 注意：仓库根目录的 `stmr.c` / `stmr.h` 是算法上游对照，**不要**和 `stem.c` 一起编译
 （`stem` 符号会重复定义）。
@@ -90,10 +118,16 @@ gcc -std=c99 -Wall -Wextra -o query query.c index_io.c stem.c -lm
 ## 4. 数据流与已实现的索引结构
 
 ```
-file.txt ──index_gen──> 内存倒排索引 ──index_save()──> index.bin
-                                                        │
-test.txt ──────────────────────> query ──index_load()───┘ ──> output.txt
+原始文本 ──tokenize──> file.txt ──┬─ index_gen pass 1 ──> stoplist.txt（Part 1）
+                                  └─ index_gen pass 2 ──> index.bin（Part 2）
+                                                            │
+test.txt ─────────────────────────> query ──index_load()────┘ ──> output.txt（Part 3/4）
 ```
+
+两遍扫描的分工：pass 1 用 `read_triples(..., skip=NULL, ...)` 把整份语料插进内存索引（顺便得到
+cf / df），据此算出 stoplist；pass 2 **丢掉** pass 1 的索引、重新建一份并跳过停用词，
+这样两份索引不会同时驻留。两遍共用同一个 `read_triples()` 与 `index_add_position()`，
+所以"统计"和"建索引"在切词、词干化、去重、排序上的口径不可能不一致。
 
 内存结构（在 `index_io.c` 里，`index_gen` 与 `query` 共用）：
 
@@ -247,6 +281,10 @@ pass 2：
 
 1. **切词**：按 `isalnum` 连续段切（与 hw3 同款约定）。`don't` → `don` / `t`，
    `well-known` → `well` / `known`；纯数字串也按题面当词处理。
+   这套口径与接口已写进 [`tokenize.h`](tokenize.h) 顶部注释。**切词这一层不做词干化**，
+   只输出转小写后的原形：词干化全流程只由 `stemword()` 做一次（`index_gen` 读 `file.txt`
+   时一次、`query` 查词时一次）。Porter 不幂等（实测 604 个词里 11 个二次切会变，
+   如 `because` → `becaus` → `becau`），两层各切一次会让索引与查询对不上。
 2. **词干化**：索引 key 存的是**词干**，不是原形。查询词也走同一个 `stemword()`。
    可选：额外存 `stem -> 原形集合` 用于展示，但 **Bonus 规模下要砍掉**（额外内存换不来分数）。
 3. **SPIMI 的收益**：内存上限由「缓冲上限 + 归并的 k 个读缓冲」决定（几百 MB），
@@ -273,6 +311,23 @@ pass 2：
 - 默认阈值取 **θ = 0.5**（超过一半文档都含它就判噪声），再叠加固定表兜底。
 - 报告里应给出 θ ∈ {0.3, 0.4, 0.5, 0.6} 时 stoplist 大小与查询结果的变化 —— 这正是第 4 问的素材。
 
+**已落地**：pass 1 的 `wc_scan()` 用与建索引完全相同的入口统计 cf / df，`wc_stoplist()` 按
+`df/N > θ` 挑出停用词写进 `stoplist.txt`，pass 2 建索引时跳过它们；`./index_gen --count-only`
+会打印完整词频报告（N、V、总词次、stoplist 明细、cf 前 50 名），即"第 1 问"的原始数据。
+`tests/sweep.py` 在合成语料（N=40）上的实测：
+
+| θ | stoplist 条数 | 索引词条数 | index.bin | 保留的位置条目 |
+| --- | --- | --- | --- | --- |
+| 0.3 | 733 | 6391 | 235.2 KB | 14.2% |
+| 0.4 | 532 | 6592 | 252.2 KB | 16.4% |
+| 0.5 | 422 | 6702 | 263.8 KB | 18.1% |
+| 0.6 | 340 | 6784 | 274.3 KB | 19.7% |
+
+代价要写在报告里：θ 越小删得越狠，索引越小、查询越快，但**含停用词的短语会查不到**
+（`"to be or not to be"` 五个词全在 stoplist 里 → 必然 0 命中），这是剔除停用词的固有副作用；
+索引侧能做的补救是让 `query` 用 `stoplist.txt` 明确回答"这是 Part 1 剔除的停用词"，
+而不是笼统的 `Not found`。
+
 ---
 
 ## 10. 查询与阈值（题面第 3、4 问）
@@ -290,6 +345,31 @@ pass 2：
    真实语料可以做（位置链已就绪）；Bonus 规模下位置索引体积翻倍，建议做成可选开关。
 
 报告里给出 τ 的敏感性实验：同一批查询下，`τ` 与「平均结果集大小」「人工判定相关的前 20 条被截掉多少」的关系。
+
+**已落地**：`query` 实现单词 / 多词 AND / 短语三种查询。短语走"先对各词取文档交集、再逐候选文档
+用位置链验证 `pos, pos+1, pos+2...` 连续"，并用 **tf 最小的词当锚点**（候选起始位置最少，
+验证代价最低）。查询阈值 τ 是**硬阈值**：`df/N > τ` 时打印
+
+```
+Too common: wevafi  (df=18/40 = 0.450, tf=27, tau=0.200 -> 18 documents, result list suppressed)
+```
+
+并在多词查询里把该词排除出交集，让"阈值如何改变结果"直接看得见。
+
+实测（合成语料，N=40，索引用 θ = 0.5 建；`tests/sweep.py`）：
+
+| τ | 高频词 df/N=0.450 | 中频词 df/N=0.200 | 极稀有词 df/N=0.025 | 被拦下的查询 |
+| --- | --- | --- | --- | --- |
+| 不设 | 27 篇 | 11 篇 | 1 篇 | 0/3 |
+| 0.1 | 拦下 | 拦下 | 1 篇 | 2/3 |
+| 0.2 | 拦下 | 11 篇 | 1 篇 | 1/3 |
+| 0.3 | 拦下 | 11 篇 | 1 篇 | 1/3 |
+| 0.4 | 拦下 | 11 篇 | 1 篇 | 1/3 |
+
+两点结论：① τ 只有落在 `(0, θ]` 内才有效 —— `df/N > θ` 的词在 Part 2 就已经不在索引里，
+查询侧只会得到 `Not found`（还会被提示成停用词），所以"查询阈值"的可用区间其实由建索引时的 θ 决定；
+② 硬阈值的价值是让"结果集大到没有意义"变成一句可解释的提示，代价是**完全丢掉**该词的结果列表，
+真实系统应当用软阈值（top-K + tf-idf / BM25，见第 11 节）。
 
 ---
 
@@ -342,62 +422,83 @@ pass 2：
 
 ---
 
-## 12. 测试：计划与已完成的验证
+## 12. 测试：结果与验证
 
-**倒排索引正确性（2 分）**
+测试入口是 [`tests/run_tests.sh`](tests/run_tests.sh)：在临时目录里编译五个程序、生成合成语料，
+然后逐项校验，当前 **19 项全部 PASS**（合成语料：40 篇 / 161,892 条三元组 / N=40 / V=7,124 / θ=0.5）。
 
-- 小语料对拍：Python 暴力实现 `{term: set(docids)}` vs C 索引，逐 term 必须完全相等
-  （口径一致：同样的切词、同样的词干、同样的停用词）。
-- 编解码往返 —— **已做**，三项都过了：
-  1. **整文件往返**：`index.bin` 读回内存再 `index_save()` 落盘，与原文件 `cmp` **逐字节相同**；
-  2. **逐词条对拍**：直接 `index_build()` 出来的内存索引 vs 从 `index.bin` `index_load()` 回来的索引，
-     词干 / tf / df / 位置链全等（随机语料多组：3771 个位置 / 6 篇文档 / 15 个词干、
-     20001 个位置 / 51 篇文档 / 4399 个词干，均为 0 处不一致）；
-  3. **gap 边界**：构造 doc 增量 / pos 增量恰好跨过 127 / 128 / 16383 / 16384 的用例，往返仍逐字节相同。
-- 损坏文件必须被拒绝 —— **已做**：垃圾文件、截断（去掉末尾 1 字节 / 只留 40 字节）、版本号被改成 2、
-  词典里的 `tf` 被改大，`index_load()` 全部返回 NULL，`query` 报错退出。
-  已知例外见第 5 节末尾（v1 无校验和）。
-- 增量：加一篇文档后只有该文档的 `(term, docid)` 变化；删一篇后不残留。**（未做）**
-- 随机 fuzz：随机文档集 + 随机查询，C 结果 vs Python 暴力结果。**（部分等价于上面第 2 项，尚未与 Python 对拍）**
-- 编译零告警（`-Wall -Wextra`，`index_io.c` 另加 `-Wpedantic` 也过）+ ASan / UBSan / LeakSanitizer 无报告。
+**编译与静态检查**
 
-**查询阈值（2 分）**
+- 五个程序（`index_gen` / `query` / `tokenize` / `stem_list` / `roundtrip`）在
+  `-std=c99 -Wall -Wextra -Wpedantic` 下**零告警**；`tests/run_tests.sh` 第 1 步就是这条。
 
-- 对 θ ∈ {0.3, 0.4, 0.5, 0.6}、τ ∈ {0.1, 0.2, 0.3, 0.4}，记录：stoplist 大小、
-  各类查询的平均结果数、被截断的比例。
-- 给出**同一个具体查询**在不同 τ 下的结果，说明阈值如何改变结果。
+**倒排索引正确性（Testing 2 分）**
 
-**Bonus 验证**
+- **独立对拍（最强的一条）**：`tests/brute_check.py` 用另一份实现（Python 按 `index.h` 规范重新解析
+  `index.bin`，含 LEB128 解码）与"从 `file.txt` 暴力聚合"的结果逐词条比较 —— 词条集合、df、tf、
+  完整位置链全部相等：`PASS: 6702 terms, 29296 positions, 40 documents`。
+  同时验证结构自洽：魔数 / 版本 / 段偏移递增 / terms 段长度 / 各词条 df·tf / 位置总数 /
+  文件末尾无多余字节。
+- **停用词确实不在索引里**：同一脚本加 `--stoplist`，要求索引恰好等于「全部词条 − stoplist」。
+- **编解码往返**：`tests/roundtrip.c` 读 `index.bin` → `index_load()` → `index_save()`
+  再写一份，与原文件 `cmp` **逐字节相同**（这条测试在开发时抓到过"魔数按 8 字节读字符串字面量"的 bug）。
+- **切词口径对拍**：`./tokenize` 在样例文档上的词表与 `tr -cs 'A-Za-z0-9' '\n' | tr 'A-Z' 'a-z'`
+  逐词一致（4,057 个词）。
+- **短语查询对拍**：暴力枚举短语
+  `zolkim vireth qandel brusett nomin` 的 (doc, start)，与 `query` 的输出一致（doc 0 与 doc 3 的 pos=10）。
+- **损坏文件必须被拒绝**：截断 1 字节 / 版本号改成 2 / 纯垃圾文件，`index_load()` 全部返回 NULL、
+  `query` 非零退出。已知例外见第 5 节末尾（v1 无校验和）。
+- **边界：空输入** —— 空 `file.txt` → `N=0`、产出 64 字节空索引，`query` 仍能加载并报 `Not found`。
+- 未做：**增量更新测试**（加一篇文档后只有该文档的 `(term, docid)` 变化）—— 当前实现是全量重建，
+  增量能力本来就不在题面范围内。
 
-- 合成 50 万个小文件跑 M4，测峰值 RSS 与总耗时；再用同一语料跑 M1，证明 M1 会 OOM。
+**查询阈值（Testing 2 分）**
+
+- `tests/sweep.py` 输出两张 Markdown 表：θ ∈ {0.3,0.4,0.5,0.6} 的 stoplist 大小 / 索引体积 /
+  保留的位置比例（第 9 节），以及 τ ∈ {不设,0.1,0.2,0.3,0.4} 下三个查询的结果集大小与被拦下比例（第 10 节）。
+- 结论：τ 的有效区间是 `(0, θ]`；硬阈值让"结果过大"变得可解释，但会完全丢掉该词的结果列表。
+
+**还没做的验证**
+
+- **真实语料上的端到端**：莎士比亚全集未下载（按指示先不做）。现有实测都在确定性合成语料上，
+  换成真实语料只是把 `file.txt` 换成 `./tokenize` 的输出，测试脚本不需要改。
+- **Bonus 验证**（50 万个小文件、峰值 RSS 是否为常数）：见第 11 节，属于加分项，尚未实现。
 
 ---
 
 ## 13. 已定 / 待定
 
-### 已定
+### 已定（都已落地）
 
-1. **词干模块**：`stem.c` + `stem.h` 就位；`isDoubleConsonant()` 已补上游遗漏的
-   `index <= stem_k0` 边界守卫。改动只去掉一次越界读：94,255 词对拍，输出与 `hw3.c` 内联版
-   **逐字节一致**，ASan/UBSan 下无报告。
-2. **代码结构**：`mini_search_engine.c` 已删除，拆成 `index.h`（公共类型 / 接口 / 格式规范）+
-   `index_io.c`（共享的内存索引 + 落盘读写）+ `index_gen.c`（Part 2，含 `main`）+
-   `query.c`（Part 3，含 `main`）；`tokenize.c` / `wordcount.c` 待实现。
-3. **索引文件格式**：二进制 v1（第 5 节），定长小端头部 + 段偏移 + postings 用 gap/varint。
-   仍开放：是否加头部校验和（v2 可选项）、Bonus 规模的分块格式。
-4. **文档**：本文由原 `design.md` 改写而来（内容已全部并入）；`../documentation.md` 仍是拆分前的
-   旧版，按你的指示等实现完成后再同步。`design.md` 是否删除待确认。
+1. **词干模块**：`stem.c` + `stem.h` 就位；`isDoubleConsonant()` 已补上游遗漏的 `index <= stem_k0`
+   边界守卫（改动只去掉一次越界读：94,255 词对拍，输出与 `hw3.c` 内联版逐字节一致）。
+2. **代码结构**：`index.h`（公共类型 / 接口 / 格式规范）+ `index_io.c`（共享内存索引 + 落盘读写）
+   + `index_gen.c`（Part 1 + Part 2，含 `main`）+ `query.c`（Part 3 + Part 4，含 `main`）
+   + `tokenize.c` / `tokenize.h` / `tokenize_main.c`（切词与其命令行）。
+3. **`wordcount.c` 已删除**，统计并入 `index_gen.c` 的 pass 1。原因：stoplist 是建索引的**输入**
+   而不是邻居，拆成两个程序会带来三个新问题 —— （a）多一份 `stoplist.txt` 格式与加载器；
+   （b）`stoplist.txt` 与 `file.txt` 不同步时 `index.bin` 结构完全合法、内容静默错误；
+   （c）"同一份 `file.txt` 跑两次得到逐字节相同的 `index.bin`"这条可复现性会退化成
+   "还要 stoplist.txt 与 θ 也相同"。合并后两遍扫描共用同一套口径，以上三个问题都不存在。
+   代价是 `index_gen.c` 变长（约 400 行），用 `--count-only` 保留了"只做 Part 1"的独立入口。
+4. **索引文件格式**：二进制 v1（第 5 节），定长小端头部 + 段偏移 + postings 用 gap/varint，
+   加 load 侧交叉校验与 `.tmp` + `rename` 原子落盘。仍开放：是否加头部校验和（v2 可选项）、
+   Bonus 规模的分块格式。
+5. **停用词口径**：`df/N > θ`，默认 θ = 0.5，三种给法（宏 / `-D` / `--theta=`），见第 9 节。
+6. **查询阈值 τ**：硬阈值（报 too common 并从交集中剔除），默认不设，`--tau=` 开启，见第 10 节。
+7. **文档**：`code/README.md`（本文）与 `../readme.md` 已按实现完成后的状态同步；
+   `../documentation.md` 也已重写为完整报告。
 
 ### 待定
 
-1. **停用词口径**：建议 `df / N > θ`（默认 θ = 0.5）+ 固定表兜底，见第 9 节。
-2. **查询阈值 τ 的形态**：硬阈值（直接报 too common）还是软阈值（top-K + tf-idf 排序），见第 10 节。
-3. **是否要短语查询**：题面写的是 *word (or phrase)*；位置链已就绪，成本主要在连续性验证逻辑。
-4. **语料来源**：`shakespeare.mit.edu` 需联网下载 —— 按你的指示**先不做**。
-5. **文档粒度**：建议按剧 + 参数化，详见 6.1。
-6. ~~数据文件位置~~ **已定**：`file.txt` / `test.txt` 就在本目录，第 3 节的命令可以直接跑
-   （两个文件目前是空的，要自己准备三元组数据）。仍然开放：要不要给程序加命令行路径参数。
-7. **遗留**：`hw3.c` 里内联的那份 `isDoubleConsonant()` 存在同一个越界读，本仓库**尚未修改 `hw3.c`**
+1. **真实语料**：`shakespeare.mit.edu` 需要联网下载，按你的指示先不做；下载后
+   `./tokenize <每部剧一个文件> > file.txt` 即可复用全部流程与实验。
+2. **文档粒度**：按剧（N≈40）还是按幕 / 场（N≈200 / 1000）—— 建议按剧为主、`--granularity` 参数化，
+   详见 6.1；当前实现只按"一个输入文件 = 一篇文档"。
+3. **软阈值（top-K + tf-idf / BM25）**：题面第 4 问只要求"测试阈值如何影响结果"，硬阈值已经能回答；
+   真实系统里更该做软阈值，见第 10、11 节。
+4. **位置索引的取舍**：短语查询需要位置链，Bonus 规模下位置索引体积翻倍，建议做成可选开关。
+5. **遗留**：`hw3.c` 里内联的那份 `isDoubleConsonant()` 存在同一个越界读，本仓库尚未修改 `hw3.c`
    （等你的指示）。
 
 ---
@@ -422,3 +523,26 @@ pass 2：
   先把查询词拷进本地缓冲再词干化；
 - 单独用 `stem()` 时：调用前要自己统一大小写（它只对小写字母序列有效），调用后要自己补 `'\0'`
   （它返回词干末字符的下标，不写结束符）；`stem()` 内部用文件级静态变量，不可重入、非线程安全。
+
+**实现完成后新踩到的坑（都是这次加 Part 1/3/4 时才发现的）**
+
+- **Porter 不幂等，所以切词层绝不能词干化**：`stemword()` 全流程只能做两次（建索引一次、查询一次）。
+  实测 604 个词里有 11 个二次切会变（`because` → `becaus` → `becau`、`release` → `releas` → `relea`）；
+  如果 `tokenize` 把词干写进 `file.txt`，`index_gen` 会再切一次，索引里存 `becau`、查询侧得 `becaus`，
+  **查不到且索引文件本身完全合法**。所以 `tokenize.h` 明确规定这一层只做 `tolower`。
+- **停用词会让"含停用词的短语"必然查不到**：`"to be or not to be"` 五个词全在 stoplist 里，
+  索引里没有它们，短语检查连候选文档都取不到。这不是 bug 而是取舍（第 9 节），
+  报告里必须写明；`query` 能做的补救是用 `stoplist.txt` 把 `Not found` 解释成"Part 1 剔除的停用词"。
+- **τ 的可用区间被 θ 限制**：`df/N > θ` 的词已经不在索引里，查询侧根本看不到它们的 df，
+  所以 τ 只有落在 `(0, θ]` 内才有意义；把 τ 设成 0.6 而 θ 还是 0.5 时，什么都不会被拦下。
+- **`isalnum()` / `tolower()` 必须先把 `char` 转成 `unsigned char`**：直接传 `char`（在 x86 上是有符号的）
+  遇到非 ASCII 字节（比如 UTF-8 中文、`naïve` 的 `ï`）是越界访问，UB。`tokenize.c` 里所有
+  `ctype` 调用都写了 `(unsigned char)` 转换。
+- **求交的循环每轮都必须让锚点前进**：`intersect_docs()` 在"锚点词不匹配"的分支里也要推进 `pos[0]`，
+  否则两边的指针都不动 → 死循环。这里用"把锚点跳到 ≥ 对方当前 doc 的第一个位置"来保证严格前进。
+- **短语验证要用 tf 最小的词当锚点**：`run_phrase_query()` 会就地重排 `terms[]`（按 tf 升序），
+  所以调用方若要按用户输入的顺序打印词，必须在调用**之前**打印完 —— `query.c` 就是这么做的。
+- **`fscanf("%255s")` 与切词层的截断口径要对齐**：超过 255 字节的 `isalnum` 段如果在
+  `file.txt` 里原样写出，`%255s` 会切掉前 255 字节、剩下的当成新的一个词，后面的
+  `doc_id` / `pos` 全部错位（`fscanf` 返回 1，其后内容一律不再入库）。`tokenize` 因此在
+  写出前就按 `TOKEN_MAX-1` 截断，两侧对"同一个词的边界"完全一致。
