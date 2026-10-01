@@ -1,12 +1,13 @@
 # ADS 课程作业
 
-本目录保存 ADS（算法与数据结构）课程的 C 语言作业实现。
+本目录保存 ADS（算法与数据结构）课程的 C 语言作业与 project 实现。
 
 ## 目录
 
 - `hw1.c`：AVL 树插入作业。读入 `n` 个整数依次插入，插入过程中通过 LL / LR / RR / RL 旋转保持平衡，最后输出根结点的值。
 - `hw2.c`：3 阶 B+ 树作业。实现初始化、插入（含分裂）、查找，并按层输出整棵树。
 - `hw3.c`：Document Distance 作业。用词频向量的夹角度量两篇文档的距离；已把 [wooorm/stmr.c](https://github.com/wooorm/stmr.c) 的 Porter 词干算法内联进来，是**自包含单文件**（PTA 只提交这一个 `.c`）。仓库里另存的 `stmr.c` / `stmr.h` 仅是算法来源参考，不参与编译（MIT 许可见 `LICENSE-stmr.txt`）。
+- `pr1/`：project 1「Roll Your Own Mini Search Engine」——对语料建带词干化的倒排索引，支持单词 / 短语查询与阈值实验。**交付两个源文件**：`code/index_gen.c`（切词 + 统计 + 建索引）与 `code/query.c`（查询），共用的索引模块放在头文件 `code/index.h` 里（`static inline` 实现），词干算法 `stem.c` / `stem.h` 是外部引用。说明见 [`pr1/readme.md`](pr1/readme.md)，完整报告见 [`pr1/documentation.md`](pr1/documentation.md)。
 
 ## hw1.c：AVL 树
 
@@ -295,3 +296,30 @@ printf '3\nA00\nA B C\n#\nA01\nB C D\n#\nA02\nA C\nD A\n#\n2\nA00 A01\nA00 A02\n
 - 询问中若出现不存在的题名，按距离 `0.000` 输出（题面保证询问的文件都存在，这里只作防御）。
 - 只按 ASCII 的 `isalnum` 切词，非 ASCII 字节会被当作分隔符。
 - 文档数按 `N ≤ 100` 设计（哈希桶数 2048、点积矩阵 `N × N`），`N` 更大时需调大 `BUCKETS`。
+
+## pr1：迷你搜索引擎（Roll Your Own Mini Search Engine）
+
+project 1 的实现独立放在 [`pr1/`](pr1/) 目录下，不参与 `hw*.c` 的编译：
+
+- [`pr1/readme.md`](pr1/readme.md)：题面、目录用途、构建与运行、输入输出约定、注意事项。
+- [`pr1/documentation.md`](pr1/documentation.md)：完整报告（题目分析、方法、实验、验证、Bonus 讨论）。
+- [`pr1/code/README.md`](pr1/code/README.md)：代码目录说明（设计取舍、`index.bin` 格式规范、踩坑记录）。
+- [`pr1/code/tests/README.md`](pr1/code/tests/README.md)：测试与实验脚本说明。
+
+要点：
+
+- 交付的源文件只有两个 —— `code/index_gen.c`（切词 + Part 1 词频/停用词统计 + Part 2 建索引）与
+  `code/query.c`（Part 3 单词 / AND / 短语查询 + Part 4 查询阈值 τ）；词干算法 `code/stem.c` 是外部引用。
+- 两者共用的索引模块（内存索引、`index.bin` 读写、以及**格式规范注释**）整体放在 `code/index.h` 里，
+  函数写成 `static inline`，两个程序各 `#include` 一次：格式在磁盘上只有一份定义，两个程序各自编译一份副本。
+- 构建（`cd pr1/code` 后执行）：
+
+  ```bash
+  gcc -std=c99 -Wall -Wextra -o index_gen index_gen.c stem.c -lm
+  gcc -std=c99 -Wall -Wextra -o query     query.c     stem.c -lm
+  ./index_gen 语料文件...        # 每个文件 = 一篇文档，产出 index.bin + stoplist.txt
+  ./query 词1 词2                # 查询；不带参数则读 test.txt，结果写 output.txt
+  ```
+
+- 测试：`cd pr1/code/tests && sh run_tests.sh`（在临时目录里编译并跑完整流水线，当前 21 项全部通过，
+  四个程序在 `-std=c99 -Wall -Wextra -Wpedantic` 下零告警）。
