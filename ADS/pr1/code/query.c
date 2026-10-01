@@ -22,7 +22,8 @@
  * stoplist.txt（index_gen 生成）存在时，用来解释 "Not found" 是不是停用词；
  * 它只影响提示文字，不影响查询结果 —— 索引里有什么完全由 index.bin 决定。
  *
- * 编译：gcc -std=c99 -Wall -Wextra -o query query.c index_io.c stem.c -lm
+ * 编译：gcc -std=c99 -Wall -Wextra -o query query.c stem.c -lm
+ *       （索引模块在 index.h 里，本文件 #include 它即可，没有单独的 index_io.c）
  */
 #include <ctype.h>
 #include <stdio.h>

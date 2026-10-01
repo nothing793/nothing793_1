@@ -7,7 +7,7 @@
 > **语料说明（重要）**：本报告的实验在**确定性合成语料**上完成（40 篇 × 4000 词，
 > `code/tests/gen_corpus.py` 生成，固定随机种子）。真实语料（莎士比亚全集，
 > `shakespeare.mit.edu`）按指示**尚未下载**；换成真实语料只需
-> `./tokenize <每部剧一个文件> > file.txt`，之后的建索引、查询与全部阈值实验可原样复用，
+> `./index_gen <每部剧一个文件>`，之后的查询与全部阈值实验可原样复用，
 > 结论（θ / τ 的单调性与有效区间）与语料无关。
 
 ## 1. 题目要求
@@ -22,15 +22,14 @@
 本实现把题目拆成三段流水线 + 两个实验脚本：
 
 ```
-原始文本 --tokenize--> file.txt --index_gen--> index.bin --query--> output.txt
-                          │            │
-                     (部分 1 的统计)   stoplist.txt
+原始文本 ─┬─ index_gen pass 1 ─> stoplist.txt（部分 1 的统计）
+          └─ index_gen pass 2 ─> index.bin ── query ──> output.txt
 ```
 
 | 题面 | 实现位置 | 产物 |
 | --- | --- | --- |
-| (1) 词频 / 停用词 | `code/index_gen.c` pass 1（`wc_scan` / `wc_stoplist` / `wc_report`） | `stoplist.txt`、`--count-only` 报告 |
-| (2) 倒排索引 | `code/index_gen.c` pass 2（`index_build` + `index_save`） | `index.bin` |
+| (1) 词频 / 停用词 | `code/index_gen.c` pass 1（`collect_stats()` / `stoplist_build()` / `wc_report()`） | `stoplist.txt`、`--count-only` 报告 |
+| (2) 倒排索引 | `code/index_gen.c` pass 2（`tokenize_document()` + `index_save()`） | `index.bin` |
 | (3) 查询 | `code/query.c`（单词 / 多词 AND / 短语） | `output.txt` |
 | (4) 阈值实验 | `code/query.c --tau=` + `code/tests/sweep.py` | 第 6 节的表 B |
 
@@ -42,11 +41,11 @@
 Part 1 认定的停用词。所以必须在建索引之前先完成统计：
 
 ```
-pass 1：读 file.txt → 建一份内存索引（只为拿 cf / df）→ df/N > θ 的词写进 stoplist.txt
-pass 2：丢掉 pass 1 的索引 → 再读一遍 file.txt → 跳过 stoplist 里的词 → 建索引 → index.bin
+pass 1：读原始语料 → 建一份内存索引（只为拿 cf / df）→ df/N > θ 的词写进 stoplist.txt
+pass 2：丢掉 pass 1 的索引 → 再读一遍语料 → 跳过 stoplist 里的词 → 建索引 → index.bin
 ```
 
-两遍都调用同一个 `read_triples()` 与 `index_add_position()`，因此切词、词干化、去重、排序的口径
+两遍都调用同一个 `tokenize_document()` 与 `index_add_position()`，因此切词、词干化、去重、排序的口径
 不可能出现"统计一套、建索引另一套"。代价是时间约翻倍（合成语料 0.79 s，真实语料 88 万条三元组约 2.6 s），
 换来的是"索引里有没有停用词"这件事可验证（第 7 节的对拍就是验证这一点）。
 
@@ -56,10 +55,10 @@ pass 2：丢掉 pass 1 的索引 → 再读一遍 file.txt → 跳过 stoplist �
 做成独立可执行文件、把 stoplist 写成中间文件再喂给 Part 2。这样做有四个实际代价：
 
 1. 多一份 `stoplist.txt` 的格式规范、加载器与错误处理；
-2. **陈旧输入会静默出错**：`stoplist.txt` 与 `file.txt` 不同步时，`index.bin` 结构完全合法、
+2. **陈旧输入会静默出错**：`stoplist.txt` 与语料不同步时，`index.bin` 结构完全合法、
    加载成功、查询正常，只是内容错了 —— 这比格式损坏更难发现；
-3. 可复现性退化：原来是"同一份 `file.txt` 跑两次得到逐字节相同的 `index.bin`"，
-   外挂 stoplist 之后变成"`file.txt` + `stoplist.txt` + θ 三者都相同"；
+3. 可复现性退化：原来是"同一份语料跑两次得到逐字节相同的 `index.bin`"，
+   外挂 stoplist 之后变成"语料 + `stoplist.txt` + θ 三者都相同"；
 4. 两处各自的切词 / 词干化口径必须人工保持一致，而**口径不一致是这类作业最常见的隐蔽 bug**。
 
 合并后，`stoplist.txt` 只作为 Part 1 的**证据与解释材料**（`query` 用它把 `Not found` 说明成
@@ -69,7 +68,7 @@ pass 2：丢掉 pass 1 的索引 → 再读一遍 file.txt → 跳过 stoplist �
 ### 2.3 为什么切词层不做词干化
 
 `stemword()`（转小写 + Porter）全流程**只能做两次**：建索引时一次、查询时一次。
-如果切词层先把词干写进 `file.txt`，`index_gen` 会再切一次，而 **Porter 不是幂等的**。
+如果切词层先词干化、建索引时又切一次，而 **Porter 不是幂等的**。
 用本项目的 `stem.c` 实测 604 个常见词：
 
 ```
@@ -80,8 +79,8 @@ equivalent -> equival -> equiv  ...
 ```
 
 后果是索引里存 `becau`、查询侧算出 `becaus`：**查不到，而且 `index.bin` 从里到外完全合法**。
-因此 `code/tokenize.h` 明确规定：切词层只做 `isalnum` 连续段切分 + `tolower`，
-词干化统一交给 `stemword()`；`file.txt` 里存的是**转小写后的原形**。
+因此 `code/index_gen.c` 的切词段明确规定：切词层只做 `isalnum` 连续段切分 + `tolower`，
+词干化统一交给 `stemword()`；入库的是词干，`--dump-tokens` 写出的则是**转小写后的原形**。
 
 ## 3. Part 1：词频统计与停用词识别
 
@@ -241,19 +240,19 @@ Too common: wevafi  (df=18/40 = 0.450, tf=27, tau=0.200 -> 18 documents, result 
 ## 7. 正确性验证
 
 测试入口 `code/tests/run_tests.sh`：在临时目录里编译、生成合成语料、跑完整流水线，
-当前 **19 项全部 PASS**（语料：40 篇 / 161,892 条三元组 / N=40 / V=7,124 / θ=0.5）。
+当前 **21 项全部 PASS**（语料：40 篇 / 161,892 条三元组 / N=40 / V=7,124 / θ=0.5）。
 
 | 检查项 | 方法 | 结果 |
 | --- | --- | --- |
-| 编译 | 五个程序在 `-std=c99 -Wall -Wextra -Wpedantic` 下编译 | 零告警 |
-| 切词口径 | `./tokenize` 的词表 vs `tr -cs 'A-Za-z0-9' '\n' \| tr A-Z a-z` | 逐词一致（4,057 词） |
+| 编译 | 四个程序在 `-std=c99 -Wall -Wextra -Wpedantic` 下编译（交付源文件只有 `index_gen.c` / `query.c`） | 零告警 |
+| 切词口径 | `index_gen --dump-tokens` 的词表 vs `tr -cs 'A-Za-z0-9' '\n' \| tr A-Z a-z`；另对拍 stdin 输入 | 逐词一致（4,057 词） |
 | **索引内容（独立对拍）** | `tests/brute_check.py` 另按 `index.h` 规范（含 LEB128 解码）重写解析器，与"从 `file.txt` 暴力聚合"逐词条比较 | 词条集合 / df / tf / 完整位置链全等：6702 terms, 29296 positions |
 | **停用词确实未入索引** | 同上，要求索引 == 全部词条 − stoplist | 通过 |
 | 结构自洽 | 魔数 / 版本 / 段偏移递增 / terms 段长度 / 位置总数 / 文件末尾无多余字节 | 通过 |
 | **编解码往返** | `tests/roundtrip.c`：load → save → `cmp` | 逐字节相同 |
 | 短语查询 | 暴力枚举短语的 (doc, start) vs `query` 输出 | 一致（doc 0/3，pos 10） |
 | 损坏文件 | 截断 1 字节 / 版本号改 2 / 纯垃圾 | 全部被拒绝，`query` 非零退出 |
-| 边界 | 空 `file.txt` → N=0、64 字节空索引，仍可加载查询 | 通过 |
+| 边界 | 空文档（N=1、68 字节索引）可加载查询；手工构造的 N=0 空索引（64 字节）也能加载 | 通过 |
 | 阈值 τ | df/N 在 (0.15, 0.45] 的词在 τ=0.2 时必须被拦下 | 通过 |
 
 **已知未覆盖**：v1 无校验和（改坏一字节但结构自洽的文件会被接受，见 4.3）；
@@ -301,7 +300,7 @@ postings 裸存 10¹⁰ × 4 B = 40 GB，delta + varint 后 ≈ 10 GB；文档�
 
 1. **真实语料未跑**：所有实测都在合成语料上。合成语料是"人造 Zipf 分布"，量级与形态接近真实文本
    （V=7,124、N=40、停用词占 V 的 5.9%），但不能替代真实语料上的结论；拿到
-   `shakespeare.mit.edu` 的文本后 `./tokenize` 一步即可复用全部实验。
+   `shakespeare.mit.edu` 的文本后 `./index_gen <每部剧一个文件>` 一步即可复用全部实验。
 2. **文档粒度固定为"一个输入文件 = 一篇文档"**：想按幕 / 场切需要增加解析层（第 6.1 节的讨论）。
 3. **停用词使短语查询在含功能词时不可用**（6.3 第 4 点），需要更深设计才能同时满足题面两条要求。
 4. **无校验和**：想防住"结构自洽的篡改"需要 v2 格式。

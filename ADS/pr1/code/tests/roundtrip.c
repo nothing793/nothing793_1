@@ -1,6 +1,7 @@
 /* 往返校验工具：读 index.bin -> index_load() 重建内存索引 -> index_save() 再写一份。
  * 两次输出的文件应该逐字节相同（cmp 验证），证明编解码是自洽的。
- * 编译：gcc -std=c99 -Wall -Wextra -o roundtrip roundtrip.c ../index_io.c ../stem.c -lm
+ * 编译：gcc -std=c99 -Wall -Wextra -o roundtrip roundtrip.c ../stem.c -lm
+ *       （索引模块在 ../index.h 里，本文件 #include 它即可）
  * 用法：./roundtrip <输入索引> <输出索引>
  */
 #include <stdio.h>

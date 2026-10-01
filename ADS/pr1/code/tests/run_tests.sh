@@ -20,30 +20,27 @@ cd "$WORK" || exit 1
 CFLAGS="-std=c99 -Wall -Wextra -Wpedantic"
 
 echo "== 1. 编译（要零告警）"
-if ! gcc $CFLAGS -o index_gen "$ROOT/index_gen.c" "$ROOT/index_io.c" "$ROOT/stem.c" -lm 2>build.log; then
+if ! gcc $CFLAGS -o index_gen "$ROOT/index_gen.c" "$ROOT/stem.c" -lm 2>build.log; then
   echo "  FAIL  index_gen 编译失败"; cat build.log; exit 1
 fi
-if ! gcc $CFLAGS -o query "$ROOT/query.c" "$ROOT/index_io.c" "$ROOT/stem.c" -lm 2>>build.log; then
+if ! gcc $CFLAGS -o query "$ROOT/query.c" "$ROOT/stem.c" -lm 2>>build.log; then
   echo "  FAIL  query 编译失败"; cat build.log; exit 1
-fi
-if ! gcc $CFLAGS -o tokenize "$ROOT/tokenize_main.c" "$ROOT/tokenize.c" 2>>build.log; then
-  echo "  FAIL  tokenize 编译失败"; cat build.log; exit 1
 fi
 if ! gcc $CFLAGS -o stem_list "$TESTS/stem_list.c" "$ROOT/stem.c" -lm 2>>build.log; then
   echo "  FAIL  stem_list 编译失败"; cat build.log; exit 1
 fi
-if ! gcc $CFLAGS -o roundtrip "$TESTS/roundtrip.c" "$ROOT/index_io.c" "$ROOT/stem.c" -lm 2>>build.log; then
+if ! gcc $CFLAGS -o roundtrip "$TESTS/roundtrip.c" "$ROOT/stem.c" -lm 2>>build.log; then
   echo "  FAIL  roundtrip 编译失败"; cat build.log; exit 1
 fi
 if [ -s build.log ]; then
   bad "编译有告警：" ; cat build.log
 else
-  ok "五个程序编译零告警"
+  ok "四个程序编译零告警（交付的两个源文件只有 index_gen.c / query.c + 外部引用 stem.c）"
 fi
 
-echo "== 2. 生成合成语料 + 切词"
+echo "== 2. 生成合成语料 + 切词（index_gen --dump-tokens 写出三元组）"
 python3 "$TESTS/gen_corpus.py" corpus --docs 40 --words 4000 --seed 7 > gen.log 2>&1 && ok "语料生成（$(cat gen.log)）" || { bad "语料生成"; cat gen.log; }
-./tokenize corpus/*.txt > file.txt 2>tokenize.log && ok "切词 -> file.txt（$(wc -l < file.txt) 条三元组）" || { bad "切词"; cat tokenize.log; }
+./index_gen --count-only --dump-tokens=file.txt corpus/*.txt >/dev/null 2>tokenize.log && ok "切词 -> file.txt（$(wc -l < file.txt) 条三元组，--count-only 只跑 Part 1）" || { bad "切词"; cat tokenize.log; }
 
 echo "== 3. 切词口径对拍（tr -cs 'A-Za-z0-9'）"
 awk '{print $1}' file.txt | sort > got_words.txt
@@ -57,8 +54,17 @@ else
   bad "doc_000 切词与 tr -cs 不一致"; diff want_words.txt got_doc0.txt | head -5
 fi
 
+echo "== 3b. 从 stdin 读一篇文档（-）"
+if ./index_gen --count-only --dump-tokens=stdin_doc0.txt - < corpus/doc_000.txt >/dev/null 2>stdin.log \
+   && awk '$2 == 0' file.txt > want_doc0.txt \
+   && diff -q want_doc0.txt stdin_doc0.txt >/dev/null; then
+  ok "stdin 一篇文档切词结果与 corpus/doc_000.txt 一致（$(wc -l < stdin_doc0.txt) 条三元组）"
+else
+  bad "stdin 切词与文件切词不一致"; head -3 stdin.log
+fi
+
 echo "== 4. 建索引（Part 1 统计 + Part 2 建索引，θ = 0.5）"
-./index_gen --theta=0.5 2>index_gen.log && ok "index_gen 退出 0（$(grep -c . index_gen.log) 行统计）" || { bad "index_gen"; cat index_gen.log; }
+./index_gen --theta=0.5 corpus/*.txt 2>index_gen.log && ok "index_gen 退出 0（$(grep -c . index_gen.log) 行统计）" || { bad "index_gen"; cat index_gen.log; }
 sed -n '1p;2p;3p' index_gen.log | sed 's/^/        /'
 cp index.bin index.good.bin
 ok "$(grep 'stoplist' index_gen.log | tail -1 | sed 's/^/统计: /')"
@@ -144,14 +150,16 @@ damage "版本号改成 2" 'python3 -c "b=bytearray(open(\"index.good.bin\",\"rb
 damage "垃圾文件" 'printf "not an index at all" > index.bin'
 cp index.good.bin index.bin
 
-echo "== 11. 边界：空输入"
+echo "== 11. 边界：空文档 / 空索引"
 mkdir -p empty && cd empty || exit 1
-: > file.txt
-if "$WORK/index_gen" --theta=0.5 2>empty.log; then
-  if grep -q 'N=0 documents' empty.log && [ "$(stat -c%s index.bin)" = 64 ]; then
-    ok "空 file.txt -> N=0、产出 64 字节空索引"
+: > empty.txt
+if "$WORK/index_gen" --theta=0.5 empty.txt 2>empty.log; then
+  # 一个文件 = 一篇文档，所以空文件也是 1 篇文档（N=1），只是没有任何位置条目；
+  # index.bin 只有头部 64 B + docs 段的 4 B。
+  if grep -q 'N=1 documents' empty.log && [ "$(stat -c%s index.bin)" = 68 ]; then
+    ok "空文档 -> N=1、索引只有头部 + docs 段（68 字节）"
   else
-    bad "空输入的结果不符合预期"; cat empty.log
+    bad "空文档的结果不符合预期"; cat empty.log
   fi
   if "$WORK/query" the >/dev/null 2>&1 && grep -q '^Not found: the' output.txt; then
     ok "空索引下查询正常（Not found）"
@@ -159,7 +167,19 @@ if "$WORK/index_gen" --theta=0.5 2>empty.log; then
     bad "空索引下查询异常"
   fi
 else
-  bad "空输入时 index_gen 失败"; cat empty.log
+  bad "空文档时 index_gen 失败"; cat empty.log
+fi
+# N=0 的空索引仍必须能加载（load 侧的 ndocs == 0 分支）
+python3 - <<'PYEOF'
+import struct
+head = b'PR1IDX\x00\x00' + struct.pack('<II', 1, 64) + struct.pack('<QQQ', 0, 0, 0) + struct.pack('<QQQ', 64, 64, 64)
+assert len(head) == 64
+open('index.bin', 'wb').write(head)
+PYEOF
+if "$WORK/query" the >/dev/null 2>&1 && grep -q '^Not found: the' output.txt; then
+  ok "N=0 的 64 字节空索引仍能加载并查询"
+else
+  bad "N=0 空索引加载失败"
 fi
 cd "$WORK" || exit 1
 
